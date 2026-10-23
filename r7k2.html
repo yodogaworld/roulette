@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>罰ゲームルーレット</title>
+<style>
+  :root {
+    --bg: #1b1d2a;
+    --panel: #262938;
+    --text: #f4f4f8;
+    --muted: #a3a6b8;
+    --accent: #ff4d6d;
+    --accent-dark: #c9184a;
+    --pointer: #ffd166;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(circle at top, #2c3050 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Meiryo", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+  }
+  h1 {
+    margin: 8px 0 16px;
+    font-size: clamp(1.6rem, 6vw, 2.4rem);
+    letter-spacing: 0.08em;
+    text-shadow: 0 2px 12px rgba(255, 77, 109, 0.5);
+  }
+  .patterns {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px;
+    background: var(--panel);
+    padding: 4px;
+    border-radius: 999px;
+    margin-bottom: 24px;
+    max-width: 100%;
+  }
+  .patterns input { display: none; }
+  .patterns label {
+    padding: 7px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+    color: var(--muted);
+    transition: background 0.2s, color 0.2s;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .patterns input:checked + label {
+    background: var(--pointer);
+    color: #1b1d2a;
+  }
+  .patterns input:disabled + label { cursor: not-allowed; opacity: 0.6; }
+  .wheel-wrap {
+    position: relative;
+    width: min(88vw, 420px);
+    aspect-ratio: 1 / 1;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 50%;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  }
+  .pointer {
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 18px solid transparent;
+    border-right: 18px solid transparent;
+    border-top: 34px solid var(--pointer);
+    filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.6));
+    z-index: 2;
+  }
+  .result {
+    min-height: 3.2em;
+    margin: 24px 0 12px;
+    font-size: clamp(1.2rem, 5vw, 1.6rem);
+    font-weight: bold;
+    text-align: center;
+    color: var(--muted);
+    transition: color 0.3s;
+  }
+  .result.done {
+    color: var(--pointer);
+    animation: pop 0.4s ease-out;
+  }
+  @keyframes pop {
+    0% { transform: scale(0.7); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  button {
+    font-size: 1.2rem;
+    font-weight: bold;
+    padding: 14px 56px;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(201, 24, 74, 0.5);
+    transition: transform 0.1s, opacity 0.2s;
+    touch-action: manipulation;
+  }
+  button:active { transform: scale(0.96); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+</style>
+</head>
+<body>
+  <h1>罰ゲームルーレット</h1>
+
+  <div class="patterns" id="patterns"></div>
+
+  <div class="wheel-wrap">
+    <div class="pointer"></div>
+    <canvas id="wheel"></canvas>
+  </div>
+
+  <div id="result" class="result">スタートを押してね</div>
+  <button id="startBtn">スタート</button>
+
+<script>
+  // ===== 設定 =====
+  // 止まる候補
+  // 候補の中で同じ結果が続かないようにし、全部出たらリセットしてまたランダムに戻る
+  const POOL = ["なし"];
+
+  // 項目ごとの色（「なし」は隣同士で区別できるよう2色を交互に使う）
+  const COLORS = {
+    "なし":       ["#06a77d", "#04876a"],
+    "睡眠禁止":   ["#118ab2"],
+    "酒禁止":     ["#ef476f"],
+    "タバコ禁止": ["#f78c6b"],
+  };
+
+  // 盤面の分け方。[ラベル, 面積の比率] を上から時計回りに並べる
+  // どのパターンも合計で なし:睡眠禁止:酒禁止:タバコ禁止 = 70:10:10:10 になるようにする
+  const PATTERNS = [
+    {
+      id: "simple", name: "シンプル",
+      slices: [["なし", 70], ["睡眠禁止", 10], ["酒禁止", 10], ["タバコ禁止", 10]],
+    },
+    {
+      id: "scatter", name: "散らばり",
+      slices: [
+        ["なし", 1], ["睡眠禁止", 1], ["なし", 1], ["なし", 1], ["酒禁止", 1],
+        ["なし", 1], ["なし", 1], ["タバコ禁止", 1], ["なし", 1], ["なし", 1],
+      ],
+    },
+    {
+      id: "fine", name: "細かめ",
+      slices: [
+        ["なし", 1], ["睡眠禁止", 1], ["なし", 1], ["なし", 1], ["酒禁止", 1],
+        ["なし", 1], ["なし", 1], ["なし", 1], ["タバコ禁止", 1], ["なし", 1],
+        ["なし", 1], ["睡眠禁止", 1], ["なし", 1], ["なし", 1], ["酒禁止", 1],
+        ["なし", 1], ["なし", 1], ["なし", 1], ["タバコ禁止", 1], ["なし", 1],
+      ],
+    },
+  ];
+
+  const SPIN_DURATION = 7500; // 回転時間(ms)
+  const EXTRA_SPINS = 6;      // 止まるまでに最低何周するか
+  const STORAGE_KEY = "roulette-pattern";
+  const HISTORY_KEY = "roulette-used";
+
+  // ===== 準備 =====
+  const canvas = document.getElementById("wheel");
+  const ctx = canvas.getContext("2d");
+  const resultEl = document.getElementById("result");
+  const startBtn = document.getElementById("startBtn");
+  const patternsEl = document.getElementById("patterns");
+
+  const TAU = Math.PI * 2;
+
+  let segments = [];
+  let rotation = 0;
+  let spinning = false;
+
+  // パターンから扇形（上端から時計回りのラジアン範囲）を作る
+  function buildSegments(pattern) {
+    const total = pattern.slices.reduce((s, [, w]) => s + w, 0);
+    const colorCount = {};
+    let acc = 0;
+    return pattern.slices.map(([label, w]) => {
+      const size = (w / total) * TAU;
+      const palette = COLORS[label] || ["#888"];
+      const n = colorCount[label] = (colorCount[label] ?? -1) + 1;
+      const seg = { label, weight: w, color: palette[n % palette.length], start: acc, end: acc + size };
+      acc += size;
+      return seg;
+    });
+  }
+
+  function loadSavedPattern() {
+    try { return localStorage.getItem(STORAGE_KEY); } catch (e) { return null; }
+  }
+  function savePattern(id) {
+    try { localStorage.setItem(STORAGE_KEY, id); } catch (e) {}
+  }
+
+  function setPattern(id) {
+    const pattern = PATTERNS.find((p) => p.id === id) || PATTERNS[0];
+    segments = buildSegments(pattern);
+    savePattern(pattern.id);
+    draw();
+  }
+
+  // パターン選択ボタンを生成
+  const initialId = PATTERNS.some((p) => p.id === loadSavedPattern()) ? loadSavedPattern() : PATTERNS[0].id;
+  PATTERNS.forEach((p) => {
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "pattern";
+    input.id = `pattern-${p.id}`;
+    input.value = p.id;
+    input.checked = p.id === initialId;
+    input.addEventListener("change", () => setPattern(p.id));
+    const label = document.createElement("label");
+    label.htmlFor = input.id;
+    label.textContent = p.name;
+    patternsEl.append(input, label);
+  });
+
+  function setPatternsDisabled(disabled) {
+    patternsEl.querySelectorAll("input").forEach((el) => { el.disabled = disabled; });
+  }
+
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const size = canvas.clientWidth;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function draw() {
+    const size = canvas.clientWidth;
+    if (!size) return;
+    const c = size / 2;
+    const r = c - 4;
+    const many = segments.length > 12;
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.translate(c, c);
+    ctx.rotate(rotation);
+
+    segments.forEach((seg) => {
+      const a0 = -Math.PI / 2 + seg.start;
+      const a1 = -Math.PI / 2 + seg.end;
+
+      // 扇形
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, r, a0, a1);
+      ctx.closePath();
+      ctx.fillStyle = seg.color;
+      ctx.fill();
+      ctx.lineWidth = many ? 2 : 3;
+      ctx.strokeStyle = "#fff";
+      ctx.stroke();
+
+      // ラベル（半径方向に描画。扇形の幅と長さの両方に収まるよう縮小）
+      const mid = (a0 + a1) / 2;
+      const textR = r * 0.6;
+      const arcWidth = textR * (a1 - a0);
+      ctx.save();
+      ctx.rotate(mid);
+      ctx.fillStyle = "#fff";
+      let fontSize = Math.min(Math.round(size * 0.06), Math.floor(arcWidth * 0.75));
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      const maxW = r * 0.62;
+      const w = ctx.measureText(seg.label).width;
+      if (w > maxW) {
+        fontSize = Math.floor(fontSize * maxW / w);
+        ctx.font = `bold ${fontSize}px sans-serif`;
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = 4;
+      ctx.translate(textR, 0);
+      ctx.fillText(seg.label, 0, 0);
+      ctx.restore();
+    });
+
+    ctx.restore();
+
+    // 中心のキャップ
+    ctx.beginPath();
+    ctx.arc(c, c, size * 0.07, 0, TAU);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(c, c, size * 0.045, 0, TAU);
+    ctx.fillStyle = "#262938";
+    ctx.fill();
+  }
+
+  // ===== 抽選 =====
+  // まだ出ていない候補から選ぶ。候補が一巡したら出た記録をリセットする
+  // 記録は端末に保存するので、再読み込みしても続きから
+  let usedMemory = [];
+
+  function loadUsed() {
+    try {
+      const v = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return usedMemory;
+    }
+  }
+  function saveUsed(list) {
+    usedMemory = list;
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+
+  function pickLabel() {
+    const used = loadUsed();
+    let remaining = POOL.filter((l) => !used.includes(l));
+    if (!remaining.length) remaining = POOL.slice();
+    const label = remaining[Math.floor(Math.random() * remaining.length)];
+
+    let next = used.filter((l) => l !== label).concat(label);
+    if (POOL.every((l) => next.includes(l))) {
+      next = next.filter((l) => !POOL.includes(l)); // 一巡したのでリセット
+    }
+    saveUsed(next);
+    return label;
+  }
+
+  // 決まった結果の扇形の中から、面積の比率で1つ選ぶ
+  function pickSegment() {
+    const label = pickLabel();
+    let list = segments.filter((s) => s.label === label);
+    if (!list.length) list = segments;
+    const sum = list.reduce((s, seg) => s + (seg.end - seg.start), 0);
+    let x = Math.random() * sum;
+    for (const seg of list) {
+      x -= seg.end - seg.start;
+      if (x < 0) return seg;
+    }
+    return list[list.length - 1];
+  }
+
+  // 減速カーブ（最初速く、だんだん遅く）
+  function easeOutQuart(t) {
+    return 1 - Math.pow(1 - t, 4);
+  }
+
+  function spin() {
+    if (spinning) return;
+    spinning = true;
+    startBtn.disabled = true;
+    setPatternsDisabled(true);
+    resultEl.classList.remove("done");
+    resultEl.textContent = "回転中…";
+
+    // 先に当選を決め、その扇形の中に止まる角度を計算する
+    const seg = pickSegment();
+    const margin = (seg.end - seg.start) * 0.1; // 境界ぎりぎりを避ける
+    const target = seg.start + margin + Math.random() * (seg.end - seg.start - margin * 2);
+
+    // 針（上端）が指すホイール上の角度 = (-rotation) mod 2π
+    const current = ((rotation % TAU) + TAU) % TAU;
+    const delta = (((TAU - target) - current) % TAU + TAU) % TAU;
+
+    const startRot = rotation;
+    const endRot = rotation + EXTRA_SPINS * TAU + delta;
+    const startTime = performance.now();
+
+    function frame(now) {
+      const t = Math.min((now - startTime) / SPIN_DURATION, 1);
+      rotation = startRot + (endRot - startRot) * easeOutQuart(t);
+      draw();
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        rotation = endRot % TAU;
+        spinning = false;
+        startBtn.disabled = false;
+        setPatternsDisabled(false);
+        resultEl.textContent = seg.label === "なし"
+          ? "セーフ！罰ゲームなし"
+          : `罰ゲームは「${seg.label}」！`;
+        resultEl.classList.add("done");
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  startBtn.addEventListener("click", spin);
+  window.addEventListener("resize", resizeCanvas);
+  setPattern(initialId);
+  resizeCanvas();
+</script>
+</body>
+</html>
