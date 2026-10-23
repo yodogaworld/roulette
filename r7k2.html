@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>罰ゲームルーレット</title>
+<style>
+  :root {
+    --bg: #1b1d2a;
+    --panel: #262938;
+    --text: #f4f4f8;
+    --muted: #a3a6b8;
+    --accent: #ff4d6d;
+    --accent-dark: #c9184a;
+    --pointer: #ffd166;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(circle at top, #2c3050 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Meiryo", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px;
+  }
+  h1 {
+    margin: 8px 0 28px;
+    font-size: clamp(1.6rem, 6vw, 2.4rem);
+    letter-spacing: 0.08em;
+    text-shadow: 0 2px 12px rgba(255, 77, 109, 0.5);
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    cursor: default;
+  }
+  .wheel-wrap {
+    position: relative;
+    width: min(88vw, 420px);
+    aspect-ratio: 1 / 1;
+  }
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 50%;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  }
+  .pointer {
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 18px solid transparent;
+    border-right: 18px solid transparent;
+    border-top: 34px solid var(--pointer);
+    filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.6));
+    z-index: 2;
+  }
+  .result {
+    min-height: 3.2em;
+    margin: 24px 0 12px;
+    font-size: clamp(1.2rem, 5vw, 1.6rem);
+    font-weight: bold;
+    text-align: center;
+    color: var(--muted);
+    transition: color 0.3s;
+  }
+  .result.done {
+    color: var(--pointer);
+    animation: pop 0.4s ease-out;
+  }
+  @keyframes pop {
+    0% { transform: scale(0.7); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  button {
+    font-size: 1.2rem;
+    font-weight: bold;
+    padding: 14px 56px;
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+    color: #fff;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(201, 24, 74, 0.5);
+    transition: transform 0.1s, opacity 0.2s;
+    touch-action: manipulation;
+  }
+  button:active { transform: scale(0.96); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+</style>
+</head>
+<body>
+  <h1>罰ゲームルーレット</h1>
+
+  <div class="wheel-wrap">
+    <div class="pointer"></div>
+    <canvas id="wheel"></canvas>
+  </div>
+
+  <div id="result" class="result">スタートを押してね</div>
+  <button id="startBtn">スタート</button>
+
+<script>
+  // ===== 設定 =====
+  // weight は盤面の比率
+  const ITEMS = [
+    { label: "なし",       weight: 70, color: "#06a77d" },
+    { label: "睡眠禁止",   weight: 10, color: "#118ab2" },
+    { label: "酒禁止",     weight: 10, color: "#ef476f" },
+    { label: "タバコ禁止", weight: 10, color: "#f78c6b" },
+  ];
+
+  // 止まる候補（この中から weight の比率で抽選）
+  const POOL = ["なし"];
+
+  const SPIN_DURATION = 7500; // 回転時間(ms)
+  const EXTRA_SPINS = 6;      // 止まるまでに最低何周するか
+
+  // ===== 準備 =====
+  const canvas = document.getElementById("wheel");
+  const ctx = canvas.getContext("2d");
+  const resultEl = document.getElementById("result");
+  const startBtn = document.getElementById("startBtn");
+
+  const TAU = Math.PI * 2;
+  const totalWeight = ITEMS.reduce((s, it) => s + it.weight, 0);
+
+  // 各項目の扇形範囲（上端から時計回りのラジアン）
+  let acc = 0;
+  const segments = ITEMS.map((it) => {
+    const size = (it.weight / totalWeight) * TAU;
+    const seg = { ...it, start: acc, end: acc + size };
+    acc += size;
+    return seg;
+  });
+
+  let rotation = 0;
+  let spinning = false;
+
+  function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const size = canvas.clientWidth;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function draw() {
+    const size = canvas.clientWidth;
+    const c = size / 2;
+    const r = c - 4;
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+    ctx.translate(c, c);
+    ctx.rotate(rotation);
+
+    segments.forEach((seg) => {
+      const a0 = -Math.PI / 2 + seg.start;
+      const a1 = -Math.PI / 2 + seg.end;
+
+      // 扇形
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, r, a0, a1);
+      ctx.closePath();
+      ctx.fillStyle = seg.color;
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#fff";
+      ctx.stroke();
+
+      // ラベル（細い扇形でも収まるよう半径方向に描画し、長い文字は縮小）
+      const mid = (a0 + a1) / 2;
+      ctx.save();
+      ctx.rotate(mid);
+      ctx.fillStyle = "#fff";
+      let fontSize = Math.round(size * 0.06);
+      ctx.font = `bold ${fontSize}px sans-serif`;
+      const maxW = r * 0.6;
+      const w = ctx.measureText(seg.label).width;
+      if (w > maxW) {
+        fontSize = Math.floor(fontSize * maxW / w);
+        ctx.font = `bold ${fontSize}px sans-serif`;
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = 4;
+      ctx.translate(r * 0.58, 0);
+      ctx.fillText(seg.label, 0, 0);
+      ctx.restore();
+    });
+
+    ctx.restore();
+
+    // 中心のキャップ
+    ctx.beginPath();
+    ctx.arc(c, c, size * 0.07, 0, TAU);
+    ctx.fillStyle = "#fff";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(c, c, size * 0.045, 0, TAU);
+    ctx.fillStyle = "#262938";
+    ctx.fill();
+  }
+
+  // 候補の中から weight の比率で抽選
+  function pickIndex() {
+    const allowed = POOL;
+    const pool = ITEMS.map((it, i) => i).filter((i) => allowed.includes(ITEMS[i].label));
+
+    const sum = pool.reduce((s, i) => s + ITEMS[i].weight, 0);
+    let x = Math.random() * sum;
+    for (const i of pool) {
+      x -= ITEMS[i].weight;
+      if (x < 0) return i;
+    }
+    return pool[pool.length - 1];
+  }
+
+  // 減速カーブ（最初速く、だんだん遅く）
+  function easeOutQuart(t) {
+    return 1 - Math.pow(1 - t, 4);
+  }
+
+  function spin() {
+    if (spinning) return;
+    spinning = true;
+    startBtn.disabled = true;
+    resultEl.classList.remove("done");
+    resultEl.textContent = "回転中…";
+
+    // 先に当選を決め、その扇形の中に止まる角度を計算する
+    const idx = pickIndex();
+    const seg = segments[idx];
+    const margin = (seg.end - seg.start) * 0.1; // 境界ぎりぎりを避ける
+    const target = seg.start + margin + Math.random() * (seg.end - seg.start - margin * 2);
+
+    // 針（上端）が指すホイール上の角度 = (-rotation) mod 2π
+    const current = ((rotation % TAU) + TAU) % TAU;
+    const delta = (((TAU - target) - current) % TAU + TAU) % TAU;
+
+    const startRot = rotation;
+    const endRot = rotation + EXTRA_SPINS * TAU + delta;
+    const startTime = performance.now();
+
+    function frame(now) {
+      const t = Math.min((now - startTime) / SPIN_DURATION, 1);
+      rotation = startRot + (endRot - startRot) * easeOutQuart(t);
+      draw();
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        rotation = endRot % TAU;
+        spinning = false;
+        startBtn.disabled = false;
+        resultEl.textContent = seg.label === "なし"
+          ? "セーフ！罰ゲームなし"
+          : `罰ゲームは「${seg.label}」！`;
+        resultEl.classList.add("done");
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  startBtn.addEventListener("click", spin);
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+</script>
+</body>
+</html>
